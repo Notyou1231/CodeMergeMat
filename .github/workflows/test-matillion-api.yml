@@ -1,8 +1,7 @@
-# File: .github/workflows/test-matillion-api.yml
 name: Test Matillion API Connection
 
 on:
-  workflow_dispatch:  # This allows manual triggering
+  workflow_dispatch:  # Manual trigger
 
 permissions:
   contents: read
@@ -24,6 +23,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests
+
+      - name: Verify Secrets
+        run: |
+          if [ -z "${{ secrets.MATILLION_URL }}" ]; then
+            echo "❌ MATILLION_URL is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.MATILLION_API_KEY }}" ]; then
+            echo "❌ MATILLION_API_KEY is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.MATILLION_PROJECT }}" ]; then
+            echo "❌ MATILLION_PROJECT is not set"
+            exit 1
+          fi
+          echo "✅ All required secrets are set"
 
       - name: Run API test
         env:
