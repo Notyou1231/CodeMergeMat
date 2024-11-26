@@ -1,0 +1,212 @@
+# File: .github/workflows/matillion-compare.yml
+name: Matillion Job Comparison
+
+on:
+  pull_request:
+    branches:
+      - development
+    paths:
+      - '**.json'  # Trigger only for JSON file changes
+
+jobs:
+  compare-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Get full history
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Create comparison script
+        run: |
+          cat > compare_matillion_jobs.py << 'EOL'
+          import json
+          import sys
+          import os
+          from typing import Dict, List, Tuple
+
+          class MatillionJobAnalyzer:
+              def __init__(self, dev_content: str, feature_content: str, file_path: str):
+                  self.dev_content = dev_content
+                  self.feature_content = feature_content
+                  self.file_path = file_path
+                  
+              def parse_job_content(self, content: str) -> Dict:
+                  try:
+                      return json.loads(content)
+                  except json.JSONDecodeError as e:
+                      print(f"Error parsing JSON: {e}")
+                      return {}
+                      
+              def analyze_changes(self) -> Dict:
+                  dev_job = self.parse_job_content(self.dev_content)
+                  feature_job = self.parse_job_content(self.feature_content)
+                  
+                  changes = {
+                      'components_added': [],
+                      'components_modified': [],
+                      'components_removed': [],
+                      'variables_changed': [],
+                      'connectors_changed': []
+                  }
+                  
+                  # Compare components
+                  dev_components = dev_job.get('job', {}).get('components', {})
+                  feature_components = feature_job.get('job', {}).get('components', {})
+                  
+                  # Find added and modified components
+                  for comp_id, comp in feature_components.items():
+                      if comp_id not in dev_components:
+                          changes['components_added'].append(comp)
+                      elif comp != dev_components[comp_id]:
+                          changes['components_modified'].append({
+                              'old': dev_components[comp_id],
+                              'new': comp
+                          })
+                          
+                  # Find removed components
+                  for comp_id in dev_components:
+                      if comp_id not in feature_components:
+                          changes['components_removed'].append(dev_components[comp_id])
+                          
+                  # Compare variables
+                  dev_vars = dev_job.get('job', {}).get('variables', {})
+                  feature_vars = feature_job.get('job', {}).get('variables', {})
+                  
+                  for var_name, var_details in feature_vars.items():
+                      if var_name not in dev_vars or var_details != dev_vars[var_name]:
+                          changes['variables_changed'].append((var_name, var_details))
+                          
+                  # Compare connectors
+                  dev_connectors = dev_job.get('job', {}).get('successConnectors', {})
+                  feature_connectors = feature_job.get('job', {}).get('successConnectors', {})
+                  
+                  if dev_connectors != feature_connectors:
+                      changes['connectors_changed'].append({
+                          'old': dev_connectors,
+                          'new': feature_connectors
+                      })
+                      
+                  return changes
+
+              def get_component_name(self, comp: Dict) -> str:
+                  try:
+                      return comp.get('parameters', {}).get('1', {}).get('elements', {}).get('1', {}).get('values', {}).get('1', {}).get('value', 'Unnamed')
+                  except:
+                      return 'Unnamed Component'
+
+          def generate_report(file_path: str, changes: Dict) -> str:
+              output = []
+              output.append(f"File: {os.path.basename(file_path)}")
+              
+              # Count total changes
+              total_components = len(changes['components_added']) + len(changes['components_modified']) + len(changes['components_removed'])
+              total_variables = len(changes['variables_changed'])
+              total_connectors = len(changes['connectors_changed'])
+              
+              output.append(f"Total Component Changes: {total_components}")
+              output.append(f"Total Variable Changes: {total_variables}")
+              output.append(f"Total Connector Changes: {total_connectors}")
+              output.append(f"Changes Detected: {'Yes' if total_components + total_variables + total_connectors > 0 else 'No'}")
+              
+              if total_components + total_variables + total_connectors > 0:
+                  output.append("\nNew Changes Detected:")
+                  change_number = 1
+                  
+                  # Added Components
+                  for comp in changes['components_added']:
+                      output.append(f"{change_number}. New Component Added:")
+                      output.append(f"   Name: {MatillionJobAnalyzer(None, None, None).get_component_name(comp)}")
+                      output.append(f"   Type: {comp.get('executionHint', 'Unknown')}")
+                      change_number += 1
+                      
+                  # Modified Components
+                  for comp in changes['components_modified']:
+                      output.append(f"{change_number}. Component Modified:")
+                      output.append(f"   Name: {MatillionJobAnalyzer(None, None, None).get_component_name(comp['new'])}")
+                      output.append(f"   Type: {comp['new'].get('executionHint', 'Unknown')}")
+                      change_number += 1
+                      
+                  # Removed Components
+                  for comp in changes['components_removed']:
+                      output.append(f"{change_number}. Component Removed:")
+                      output.append(f"   Name: {MatillionJobAnalyzer(None, None, None).get_component_name(comp)}")
+                      change_number += 1
+                      
+                  # Changed Variables
+                  for var_name, var_details in changes['variables_changed']:
+                      output.append(f"{change_number}. Variable Changed:")
+                      output.append(f"   Name: {var_name}")
+                      output.append(f"   New Value: {var_details.get('value', 'Unknown')}")
+                      change_number += 1
+                      
+                  # Changed Connectors
+                  if changes['connectors_changed']:
+                      output.append(f"{change_number}. Connector Changes Detected:")
+                      output.append("   Component connections have been modified")
+              
+              return "\n".join(output)
+
+          if __name__ == "__main__":
+              dev_file_content = sys.argv[1]
+              feature_file_content = sys.argv[2]
+              file_path = sys.argv[3]
+              
+              analyzer = MatillionJobAnalyzer(dev_file_content, feature_file_content, file_path)
+              changes = analyzer.analyze_changes()
+              report = generate_report(file_path, changes)
+              print(report)
+          EOL
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          echo "files=$(git diff --name-only origin/development ${{ github.event.pull_request.head.sha }} | grep '\.json$' || true)" >> $GITHUB_OUTPUT
+
+      - name: Compare Matillion jobs
+        run: |
+          CHANGED_FILES="${{ steps.changed-files.outputs.files }}"
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No JSON files changed"
+            exit 0
+          fi
+          
+          # Initialize report
+          echo "# Matillion Job Comparison Report" > report.md
+          echo "" >> report.md
+          
+          for FILE in $CHANGED_FILES; do
+            echo "Analyzing $FILE..."
+            if [ -f "$FILE" ]; then
+              DEV_CONTENT=$(git show origin/development:"$FILE" 2>/dev/null || echo "{}")
+              PR_CONTENT=$(git show ${{ github.event.pull_request.head.sha }}:"$FILE")
+              
+              echo "### $FILE" >> report.md
+              echo '```' >> report.md
+              python compare_matillion_jobs.py "$DEV_CONTENT" "$PR_CONTENT" "$FILE" >> report.md
+              echo '```' >> report.md
+              echo "" >> report.md
+            fi
+          done
+
+      - name: Comment PR
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('report.md', 'utf8');
+            
+            const { issue: { number: issue_number }, repo: { owner, repo } } = context;
+            
+            await github.rest.issues.createComment({
+              owner: owner,
+              repo: repo,
+              issue_number: issue_number,
+              body: report
+            });
