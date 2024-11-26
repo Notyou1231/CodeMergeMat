@@ -30,51 +30,25 @@ class MatillionJobAnalyzer:
         # Compare job info
         old_info = old_job.get('info', {})
         new_info = new_job.get('info', {})
-        if old_info != new_info:
+        
+        # Specifically check for name changes
+        if old_info.get('name') != new_info.get('name'):
             changes['info_changes']['modified'].append({
-                'field': 'Job Information',
-                'old_values': old_info,
-                'new_values': new_info
+                'type': 'name',
+                'old': old_info.get('name', 'Unknown'),
+                'new': new_info.get('name', 'Unknown')
             })
         
-        # Compare components
-        old_components = old_job.get('job', {}).get('components', {})
-        new_components = new_job.get('job', {}).get('components', {})
-        
-        for comp_id, comp in new_components.items():
-            if comp_id not in old_components:
-                changes['components']['added'].append({
-                    'id': comp_id,
-                    'name': self.get_component_name(comp),
-                    'type': comp.get('executionHint', 'Unknown')
-                })
-            elif comp != old_components[comp_id]:
-                changes['components']['modified'].append({
-                    'id': comp_id,
-                    'name': self.get_component_name(comp),
-                    'type': comp.get('executionHint', 'Unknown')
+        # Compare other info changes
+        for key in set(old_info.keys()) | set(new_info.keys()):
+            if key != 'name' and old_info.get(key) != new_info.get(key):
+                changes['info_changes']['modified'].append({
+                    'type': key,
+                    'old': old_info.get(key, 'Not present'),
+                    'new': new_info.get(key, 'Not present')
                 })
         
-        for comp_id, comp in old_components.items():
-            if comp_id not in new_components:
-                changes['components']['removed'].append({
-                    'id': comp_id,
-                    'name': self.get_component_name(comp),
-                    'type': comp.get('executionHint', 'Unknown')
-                })
-        
-        # Compare variables
-        old_vars = old_job.get('job', {}).get('variables', {})
-        new_vars = new_job.get('job', {}).get('variables', {})
-        
-        for var_name, new_var in new_vars.items():
-            if var_name not in old_vars or new_var != old_vars[var_name]:
-                changes['variables']['modified'].append({
-                    'name': var_name,
-                    'old_value': old_vars.get(var_name, {}).get('value', 'Not Found'),
-                    'new_value': new_var.get('value')
-                })
-        
+        # Calculate total changes
         changes['total_changes'] = (
             len(changes['components']['added']) +
             len(changes['components']['modified']) +
@@ -85,55 +59,52 @@ class MatillionJobAnalyzer:
         
         return changes
 
-    def get_component_name(self, component: Dict) -> str:
-        try:
-            return component.get('parameters', {}).get('1', {}).get('elements', {}).get('1', {}).get('values', {}).get('1', {}).get('value', 'Unnamed')
-        except:
-            return 'Unnamed Component'
-
     def print_report(self, changes: Dict):
-        print(f"File: {os.path.basename(self.new_file_path)}")
+        file_name = os.path.basename(self.new_file_path)
+        print(f"File: {file_name}\n")
         print(f"Total Component Changes: {len(changes['components']['added']) + len(changes['components']['modified']) + len(changes['components']['removed'])}")
         print(f"Total Variable Changes: {len(changes['variables']['modified'])}")
         print(f"Total Info Changes: {len(changes['info_changes']['modified'])}")
         print(f"Changes Detected: {'Yes' if changes['total_changes'] > 0 else 'No'}")
         
         if changes['total_changes'] > 0:
-            print("\nNew Changes Detected:")
-            change_count = 1
+            print("\nChanges Summary:")
             
             # Print info changes
-            for change in changes['info_changes']['modified']:
-                print(f"{change_count}. Job Information Changed:")
-                print(f"   Old Name: {change['old_values'].get('name', 'Unknown')}")
-                print(f"   New Name: {change['new_values'].get('name', 'Unknown')}")
-                change_count += 1
+            for idx, change in enumerate(changes['info_changes']['modified'], 1):
+                if change['type'] == 'name':
+                    print(f"{idx}. Job Name Changed:")
+                    print(f"   - From: {change['old']}")
+                    print(f"   - To:   {change['new']}")
+                else:
+                    print(f"{idx}. {change['type'].title()} Changed:")
+                    print(f"   - From: {change['old']}")
+                    print(f"   - To:   {change['new']}")
             
-            # Print component changes
-            for comp in changes['components']['added']:
-                print(f"{change_count}. New Component Added:")
-                print(f"   Name: {comp['name']}")
-                print(f"   Type: {comp['type']}")
-                change_count += 1
+            # Print other changes if present
+            current_idx = len(changes['info_changes']['modified']) + 1
             
-            for comp in changes['components']['modified']:
-                print(f"{change_count}. Component Modified:")
-                print(f"   Name: {comp['name']}")
-                print(f"   Type: {comp['type']}")
-                change_count += 1
+            if changes['components']['added']:
+                for comp in changes['components']['added']:
+                    print(f"{current_idx}. Component Added: {comp['name']}")
+                    current_idx += 1
             
-            for comp in changes['components']['removed']:
-                print(f"{change_count}. Component Removed:")
-                print(f"   Name: {comp['name']}")
-                print(f"   Type: {comp['type']}")
-                change_count += 1
+            if changes['components']['modified']:
+                for comp in changes['components']['modified']:
+                    print(f"{current_idx}. Component Modified: {comp['name']}")
+                    current_idx += 1
             
-            for var in changes['variables']['modified']:
-                print(f"{change_count}. Variable Changed:")
-                print(f"   Name: {var['name']}")
-                print(f"   Old Value: {var['old_value']}")
-                print(f"   New Value: {var['new_value']}")
-                change_count += 1
+            if changes['components']['removed']:
+                for comp in changes['components']['removed']:
+                    print(f"{current_idx}. Component Removed: {comp['name']}")
+                    current_idx += 1
+            
+            if changes['variables']['modified']:
+                for var in changes['variables']['modified']:
+                    print(f"{current_idx}. Variable Changed: {var['name']}")
+                    print(f"   - From: {var['old_value']}")
+                    print(f"   - To:   {var['new_value']}")
+                    current_idx += 1
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
