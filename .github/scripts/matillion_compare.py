@@ -17,23 +17,30 @@ class MatillionJobAnalyzer:
             return {}
             
     def analyze_changes(self) -> Dict:
-        # Read both files
         old_job = self.read_json_file(self.old_file_path)
         new_job = self.read_json_file(self.new_file_path)
         
-        # Initialize change tracking
         changes = {
             'components': {'added': [], 'modified': [], 'removed': []},
             'variables': {'modified': []},
-            'connectors': {'modified': []},
+            'info_changes': {'modified': []},
             'total_changes': 0
         }
+        
+        # Compare job info
+        old_info = old_job.get('info', {})
+        new_info = new_job.get('info', {})
+        if old_info != new_info:
+            changes['info_changes']['modified'].append({
+                'field': 'Job Information',
+                'old_values': old_info,
+                'new_values': new_info
+            })
         
         # Compare components
         old_components = old_job.get('job', {}).get('components', {})
         new_components = new_job.get('job', {}).get('components', {})
         
-        # Check for added and modified components
         for comp_id, comp in new_components.items():
             if comp_id not in old_components:
                 changes['components']['added'].append({
@@ -45,12 +52,9 @@ class MatillionJobAnalyzer:
                 changes['components']['modified'].append({
                     'id': comp_id,
                     'name': self.get_component_name(comp),
-                    'type': comp.get('executionHint', 'Unknown'),
-                    'old_values': old_components[comp_id],
-                    'new_values': comp
+                    'type': comp.get('executionHint', 'Unknown')
                 })
         
-        # Check for removed components
         for comp_id, comp in old_components.items():
             if comp_id not in new_components:
                 changes['components']['removed'].append({
@@ -71,12 +75,12 @@ class MatillionJobAnalyzer:
                     'new_value': new_var.get('value')
                 })
         
-        # Calculate total changes
         changes['total_changes'] = (
             len(changes['components']['added']) +
             len(changes['components']['modified']) +
             len(changes['components']['removed']) +
-            len(changes['variables']['modified'])
+            len(changes['variables']['modified']) +
+            len(changes['info_changes']['modified'])
         )
         
         return changes
@@ -91,34 +95,39 @@ class MatillionJobAnalyzer:
         print(f"File: {os.path.basename(self.new_file_path)}")
         print(f"Total Component Changes: {len(changes['components']['added']) + len(changes['components']['modified']) + len(changes['components']['removed'])}")
         print(f"Total Variable Changes: {len(changes['variables']['modified'])}")
+        print(f"Total Info Changes: {len(changes['info_changes']['modified'])}")
         print(f"Changes Detected: {'Yes' if changes['total_changes'] > 0 else 'No'}")
         
         if changes['total_changes'] > 0:
             print("\nNew Changes Detected:")
             change_count = 1
             
-            # Print added components
+            # Print info changes
+            for change in changes['info_changes']['modified']:
+                print(f"{change_count}. Job Information Changed:")
+                print(f"   Old Name: {change['old_values'].get('name', 'Unknown')}")
+                print(f"   New Name: {change['new_values'].get('name', 'Unknown')}")
+                change_count += 1
+            
+            # Print component changes
             for comp in changes['components']['added']:
                 print(f"{change_count}. New Component Added:")
                 print(f"   Name: {comp['name']}")
                 print(f"   Type: {comp['type']}")
                 change_count += 1
             
-            # Print modified components
             for comp in changes['components']['modified']:
                 print(f"{change_count}. Component Modified:")
                 print(f"   Name: {comp['name']}")
                 print(f"   Type: {comp['type']}")
                 change_count += 1
             
-            # Print removed components
             for comp in changes['components']['removed']:
                 print(f"{change_count}. Component Removed:")
                 print(f"   Name: {comp['name']}")
                 print(f"   Type: {comp['type']}")
                 change_count += 1
             
-            # Print variable changes
             for var in changes['variables']['modified']:
                 print(f"{change_count}. Variable Changed:")
                 print(f"   Name: {var['name']}")
@@ -126,22 +135,13 @@ class MatillionJobAnalyzer:
                 print(f"   New Value: {var['new_value']}")
                 change_count += 1
 
-def main():
+if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Usage: python script.py <old_file_path> <new_file_path>")
         sys.exit(1)
     
     old_file = sys.argv[1]
     new_file = sys.argv[2]
-    
-    # Create analyzer instance
     analyzer = MatillionJobAnalyzer(old_file, new_file)
-    
-    # Analyze changes
     changes = analyzer.analyze_changes()
-    
-    # Print report
     analyzer.print_report(changes)
-
-if __name__ == "__main__":
-    main()
