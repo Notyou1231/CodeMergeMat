@@ -31,44 +31,63 @@ jobs:
         run: |
           echo "files=$(git diff --name-only origin/development ${{ github.event.pull_request.head.sha }} | grep '\.json$' || true)" >> $GITHUB_OUTPUT
 
-      - name: Compare Matillion jobs
+      - name: Create and populate report
+        id: create-report
         run: |
+          # Ensure report directory exists
+          mkdir -p ./reports
+          
+          # Initialize report file
+          echo "# Matillion Job Comparison Report" > ./reports/report.md
+          echo "" >> ./reports/report.md
+          
           CHANGED_FILES="${{ steps.changed-files.outputs.files }}"
           if [ -z "$CHANGED_FILES" ]; then
-            echo "No JSON files changed"
-            exit 0
+            echo "No JSON files changed" >> ./reports/report.md
+          else
+            for FILE in $CHANGED_FILES; do
+              if [ -f "$FILE" ]; then
+                echo "Analyzing $FILE..."
+                
+                # Create temporary files for comparison
+                git show origin/development:"$FILE" > old_version.json 2>/dev/null || echo "{}" > old_version.json
+                git show ${{ github.event.pull_request.head.sha }}:"$FILE" > new_version.json
+                
+                echo "### $FILE" >> ./reports/report.md
+                echo "\`\`\`" >> ./reports/report.md
+                python .github/scripts/matillion_compare.py old_version.json new_version.json >> ./reports/report.md || echo "Error running comparison script" >> ./reports/report.md
+                echo "\`\`\`" >> ./reports/report.md
+                echo "" >> ./reports/report.md
+              fi
+            done
           fi
           
-          echo "# Matillion Job Comparison Report" > report.md
-          echo "" >> report.md
-          
-          for FILE in $CHANGED_FILES; do
-            echo "Analyzing $FILE..."
-            if [ -f "$FILE" ]; then
-              # Create temporary files for the comparison
-              git show origin/development:"$FILE" > old_version.json 2>/dev/null || echo "{}" > old_version.json
-              git show ${{ github.event.pull_request.head.sha }}:"$FILE" > new_version.json
-              
-              echo "### $FILE" >> report.md
-              echo '```' >> report.md
-              # Updated path to match your repository structure
-              python .github/scripts/matillion_compare.py old_version.json new_version.json >> report.md
-              echo '```' >> report.md
-              echo "" >> report.md
-            fi
-          done
+          # Debug output
+          echo "Report content:"
+          cat ./reports/report.md
 
       - name: Comment PR
+        if: always()
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-file: ./reports/report.md
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fallback comment in case the above fails
+      - name: Fallback Comment
+        if: failure()
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
-            const report = fs.readFileSync('report.md', 'utf8');
+            const fallbackMessage = `# Matillion Job Comparison Report
+            
+            There was an issue generating the detailed report. Please check the Actions tab for more information.`;
             
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.name,
               issue_number: context.issue.number,
-              body: report
+              body: fallbackMessage
             });
