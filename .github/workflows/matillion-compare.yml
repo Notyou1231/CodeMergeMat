@@ -26,84 +26,39 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Debug File Changes
-        run: |
-          echo "Current branch files:"
-          ls -la
-          echo "\nGit status:"
-          git status
-          echo "\nBranch information:"
-          git branch -a
-          echo "\nDiff with development:"
-          git diff --name-status origin/development
-
       - name: Get changed files
         id: changed-files
         run: |
-          # List all changed JSON files between development and current PR
           CHANGED_FILES=$(git diff --name-only origin/development...HEAD | grep '\.json$' || true)
-          echo "Changed files: $CHANGED_FILES"
           echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
 
       - name: Create and populate report
         id: create-report
         run: |
-          # Debug information
-          echo "Current directory: $(pwd)"
-          echo "List of files: $(ls -la)"
-          
-          # Ensure report directory exists
           mkdir -p ./reports
           
-          # Initialize report
           echo "# Matillion Job Comparison Report" > ./reports/report.md
           echo "" >> ./reports/report.md
           
-          # Get changed files
           CHANGED_FILES="${{ steps.changed-files.outputs.files }}"
-          echo "Detected changed files: $CHANGED_FILES"
           
           if [ -z "$CHANGED_FILES" ]; then
             echo "No JSON files changed" >> ./reports/report.md
           else
             for FILE in $CHANGED_FILES; do
-              echo "Processing file: $FILE"
-              
               if [ -f "$FILE" ]; then
-                echo "Analyzing $FILE..."
-                
-                # Save both versions with debug output
-                echo "Getting development version..."
+                # Save versions without debug output
                 git show origin/development:"$FILE" > old_version.json 2>/dev/null || echo "{}" > old_version.json
-                echo "Getting PR version..."
                 git show HEAD:"$FILE" > new_version.json
                 
                 echo "### $FILE" >> ./reports/report.md
-                echo "\`\`\`" >> ./reports/report.md
-                
-                echo "Running comparison script..."
-                python .github/scripts/matillion_compare.py old_version.json new_version.json >> ./reports/report.md || {
-                  echo "Error running comparison script"
-                  echo "Script error occurred" >> ./reports/report.md
-                }
-                
-                echo "\`\`\`" >> ./reports/report.md
+                echo '```' >> ./reports/report.md
+                python .github/scripts/matillion_compare.py old_version.json new_version.json >> ./reports/report.md
+                echo '```' >> ./reports/report.md
                 echo "" >> ./reports/report.md
-                
-                # Debug: Show file contents
-                echo "Old version content:"
-                cat old_version.json
-                echo "New version content:"
-                cat new_version.json
-              else
-                echo "File $FILE not found in workspace"
               fi
             done
           fi
-          
-          # Debug: Show final report
-          echo "Final report content:"
-          cat ./reports/report.md
 
       - name: Comment PR
         if: always()
@@ -111,26 +66,3 @@ jobs:
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body-file: ./reports/report.md
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Fallback Comment
-        if: failure()
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fallbackMessage = `# Matillion Job Comparison Report
-            
-            Debug information:
-            - PR number: ${context.issue.number}
-            - Commit: ${context.sha}
-            - Event: ${context.eventName}
-            
-            Please check the Actions tab for detailed logs.`;
-            
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.name,
-              issue_number: context.issue.number,
-              body: fallbackMessage
-            });
