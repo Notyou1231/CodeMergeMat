@@ -1,0 +1,48 @@
+name: Test Matillion API Connection
+
+on:
+  workflow_dispatch:  # Manual trigger
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  test-connection:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Verify Secrets
+        run: |
+          if [ -z "${{ secrets.MATILLION_URL }}" ]; then
+            echo "❌ MATILLION_URL is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.MATILLION_API_KEY }}" ]; then
+            echo "❌ MATILLION_API_KEY is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.MATILLION_PROJECT }}" ]; then
+            echo "❌ MATILLION_PROJECT is not set"
+            exit 1
+          fi
+          echo "✅ All required secrets are set"
+
+      - name: Run API test
+        env:
+          MATILLION_URL: ${{ secrets.MATILLION_URL }}
+          MATILLION_API_KEY: ${{ secrets.MATILLION_API_KEY }}
+          MATILLION_PROJECT: ${{ secrets.MATILLION_PROJECT }}
+        run: python .github/scripts/test_matillion_api.py

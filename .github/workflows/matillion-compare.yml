@@ -3,7 +3,7 @@ name: Matillion Job Comparison
 on:
   pull_request:
     branches:
-      - development
+      - main    # Changed from development to main
     paths:
       - '**.json'
 
@@ -34,14 +34,14 @@ jobs:
           git status
           echo "\nBranch information:"
           git branch -a
-          echo "\nDiff with development:"
-          git diff --name-status origin/development
+          echo "\nDiff with main:"
+          git diff --name-status origin/main    # Changed from development to main
 
       - name: Get changed files
         id: changed-files
         run: |
-          # List all changed JSON files between development and current PR
-          CHANGED_FILES=$(git diff --name-only origin/development...HEAD | grep '\.json$' || true)
+          # List all changed JSON files between main and current PR
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | grep '\.json$' || true)    # Changed from development to main
           echo "Changed files: $CHANGED_FILES"
           echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
 
@@ -73,8 +73,8 @@ jobs:
                 echo "Analyzing $FILE..."
                 
                 # Save both versions with debug output
-                echo "Getting development version..."
-                git show origin/development:"$FILE" > old_version.json 2>/dev/null || echo "{}" > old_version.json
+                echo "Getting main version..."
+                git show origin/main:"$FILE" > old_version.json 2>/dev/null || echo "{}" > old_version.json    # Changed from development to main
                 echo "Getting PR version..."
                 git show HEAD:"$FILE" > new_version.json
                 
@@ -89,12 +89,6 @@ jobs:
                 
                 echo "\`\`\`" >> ./reports/report.md
                 echo "" >> ./reports/report.md
-                
-                # Debug: Show file contents
-                echo "Old version content:"
-                cat old_version.json
-                echo "New version content:"
-                cat new_version.json
               else
                 echo "File $FILE not found in workspace"
               fi
