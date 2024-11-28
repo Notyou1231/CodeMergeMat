@@ -1,140 +1,118 @@
 import json
 import sys
 import os
+from typing import Dict, List, Tuple
 
 class MatillionJobAnalyzer:
     def __init__(self, old_file_path: str, new_file_path: str):
         self.old_file_path = old_file_path
         self.new_file_path = new_file_path
         
-    def read_json_file(self, file_path: str) -> dict:
+    def read_json_file(self, file_path: str) -> Dict:
         try:
-            with open(file_path, 'r') as f:
-                return json.load(f)
+            with open(file_path, 'r') as file:
+                return json.load(file)
         except Exception as e:
             print(f"Error reading file {file_path}: {e}")
             return {}
             
-    def get_tables_from_component(self, component: dict) -> dict:
-        tables = {
-            'source': [],
-            'target': []
-        }
-        
-        # Extract source and target tables from parameters
-        parameters = component.get('parameters', {})
-        for param in parameters.values():
-            if isinstance(param, dict):
-                elements = param.get('elements', {})
-                for element in elements.values():
-                    values = element.get('values', {})
-                    for value in values.values():
-                        if isinstance(value, dict):
-                            val = value.get('value', '')
-                            if 'Source Table Name' in param.get('name', ''):
-                                tables['source'].append(val)
-                            elif 'Target Table Name' in param.get('name', ''):
-                                tables['target'].append(val)
-        
-        return tables
-
-    def analyze_changes(self) -> dict:
+    def analyze_changes(self) -> Dict:
         old_job = self.read_json_file(self.old_file_path)
         new_job = self.read_json_file(self.new_file_path)
         
         changes = {
-            'job_name_changes': [],
-            'component_changes': [],
-            'table_changes': [],
+            'components': {'added': [], 'modified': [], 'removed': []},
+            'variables': {'modified': []},
+            'info_changes': {'modified': []},
             'total_changes': 0
         }
         
-        # Check job name changes
-        if old_job.get('info', {}).get('name') != new_job.get('info', {}).get('name'):
-            changes['job_name_changes'].append({
-                'type': 'job_name',
-                'old': old_job.get('info', {}).get('name'),
-                'new': new_job.get('info', {}).get('name')
-            })
-
-        # Compare components and their tables
-        old_components = old_job.get('job', {}).get('components', {})
-        new_components = new_job.get('job', {}).get('components', {})
+        # Compare job info
+        old_info = old_job.get('info', {})
+        new_info = new_job.get('info', {})
         
-        for comp_id, new_comp in new_components.items():
-            old_comp = old_components.get(comp_id)
-            if not old_comp:
-                # New component added
-                changes['component_changes'].append({
-                    'type': 'added',
-                    'name': self.get_component_name(new_comp),
-                    'tables': self.get_tables_from_component(new_comp)
+        # Specifically check for name changes
+        if old_info.get('name') != new_info.get('name'):
+            changes['info_changes']['modified'].append({
+                'type': 'name',
+                'old': old_info.get('name', 'Unknown'),
+                'new': new_info.get('name', 'Unknown')
+            })
+        
+        # Compare other info changes
+        for key in set(old_info.keys()) | set(new_info.keys()):
+            if key != 'name' and old_info.get(key) != new_info.get(key):
+                changes['info_changes']['modified'].append({
+                    'type': key,
+                    'old': old_info.get(key, 'Not present'),
+                    'new': new_info.get(key, 'Not present')
                 })
-            else:
-                # Compare existing component
-                old_tables = self.get_tables_from_component(old_comp)
-                new_tables = self.get_tables_from_component(new_comp)
-                
-                if old_tables != new_tables:
-                    changes['table_changes'].append({
-                        'component': self.get_component_name(new_comp),
-                        'old_tables': old_tables,
-                        'new_tables': new_tables
-                    })
-
+        
+        # Calculate total changes
         changes['total_changes'] = (
-            len(changes['job_name_changes']) +
-            len(changes['component_changes']) +
-            len(changes['table_changes'])
+            len(changes['components']['added']) +
+            len(changes['components']['modified']) +
+            len(changes['components']['removed']) +
+            len(changes['variables']['modified']) +
+            len(changes['info_changes']['modified'])
         )
         
         return changes
 
-    def get_component_name(self, component: dict) -> str:
-        try:
-            return component.get('parameters', {}).get('1', {}).get('elements', {}).get('1', {}).get('values', {}).get('1', {}).get('value', 'Unnamed')
-        except:
-            return 'Unnamed Component'
-
-    def print_report(self):
-        changes = self.analyze_changes()
-        
-        print(f"File: {os.path.basename(self.new_file_path)}")
-        print(f"Total Changes: {changes['total_changes']}")
-        print(f"Changes Detected: {'Yes' if changes['total_changes'] > 0 else 'No'}\n")
+    def print_report(self, changes: Dict):
+        file_name = os.path.basename(self.new_file_path)
+        print(f"File: {file_name}\n")
+        print(f"Total Component Changes: {len(changes['components']['added']) + len(changes['components']['modified']) + len(changes['components']['removed'])}")
+        print(f"Total Variable Changes: {len(changes['variables']['modified'])}")
+        print(f"Total Info Changes: {len(changes['info_changes']['modified'])}")
+        print(f"Changes Detected: {'Yes' if changes['total_changes'] > 0 else 'No'}")
         
         if changes['total_changes'] > 0:
-            print("Changes Summary:")
+            print("\nChanges Summary:")
             
-            # Print job name changes
-            for change in changes['job_name_changes']:
-                print("\nJob Name Changed:")
-                print(f"  From: {change['old']}")
-                print(f"  To:   {change['new']}")
+            # Print info changes
+            for idx, change in enumerate(changes['info_changes']['modified'], 1):
+                if change['type'] == 'name':
+                    print(f"{idx}. Job Name Changed:")
+                    print(f"   - From: {change['old']}")
+                    print(f"   - To:   {change['new']}")
+                else:
+                    print(f"{idx}. {change['type'].title()} Changed:")
+                    print(f"   - From: {change['old']}")
+                    print(f"   - To:   {change['new']}")
             
-            # Print component changes
-            for change in changes['component_changes']:
-                print(f"\nComponent {change['type'].title()}:")
-                print(f"  Name: {change['name']}")
-                if change['tables']['source'] or change['tables']['target']:
-                    print("  Tables:")
-                    print("    Source:", ', '.join(change['tables']['source']) or 'None')
-                    print("    Target:", ', '.join(change['tables']['target']) or 'None')
+            # Print other changes if present
+            current_idx = len(changes['info_changes']['modified']) + 1
             
-            # Print table changes
-            for change in changes['table_changes']:
-                print(f"\nTable Changes in Component '{change['component']}':")
-                print("  Source Tables:")
-                print("    Old:", ', '.join(change['old_tables']['source']) or 'None')
-                print("    New:", ', '.join(change['new_tables']['source']) or 'None')
-                print("  Target Tables:")
-                print("    Old:", ', '.join(change['old_tables']['target']) or 'None')
-                print("    New:", ', '.join(change['new_tables']['target']) or 'None')
+            if changes['components']['added']:
+                for comp in changes['components']['added']:
+                    print(f"{current_idx}. Component Added: {comp['name']}")
+                    current_idx += 1
+            
+            if changes['components']['modified']:
+                for comp in changes['components']['modified']:
+                    print(f"{current_idx}. Component Modified: {comp['name']}")
+                    current_idx += 1
+            
+            if changes['components']['removed']:
+                for comp in changes['components']['removed']:
+                    print(f"{current_idx}. Component Removed: {comp['name']}")
+                    current_idx += 1
+            
+            if changes['variables']['modified']:
+                for var in changes['variables']['modified']:
+                    print(f"{current_idx}. Variable Changed: {var['name']}")
+                    print(f"   - From: {var['old_value']}")
+                    print(f"   - To:   {var['new_value']}")
+                    current_idx += 1
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Usage: python script.py <old_file_path> <new_file_path>")
         sys.exit(1)
     
-    analyzer = MatillionJobAnalyzer(sys.argv[1], sys.argv[2])
-    analyzer.print_report()
+    old_file = sys.argv[1]
+    new_file = sys.argv[2]
+    analyzer = MatillionJobAnalyzer(old_file, new_file)
+    changes = analyzer.analyze_changes()
+    analyzer.print_report(changes)
