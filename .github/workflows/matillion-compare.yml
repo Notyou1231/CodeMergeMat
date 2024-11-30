@@ -2,13 +2,13 @@ name: Matillion Job Comparison
 on:
   push:
     branches:
-      - development    # Changed from development to development
+      - development
     paths:
       - '**/*.ORCHESTRATION'
       - '**/*.TRANSFORMATION'
   pull_request:
     branches:
-      - development    # Changed from development to development
+      - development
     paths:
       - '**/*.ORCHESTRATION'
       - '**/*.TRANSFORMATION'
@@ -24,22 +24,25 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
+
       - name: Get changed files
         id: changed-files
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            # For direct pushes, compare with previous commit
-            CHANGED_FILES=$(git diff --name-only HEAD^ HEAD | grep -E '\.(ORCHESTRATION|TRANSFORMATION)$' || true)
-          else
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             # For PRs, compare with development
             CHANGED_FILES=$(git diff --name-only origin/development...HEAD | grep -E '\.(ORCHESTRATION|TRANSFORMATION)$' || true)
+          else
+            # For direct pushes
+            CHANGED_FILES=$(git diff --name-only HEAD^ HEAD | grep -E '\.(ORCHESTRATION|TRANSFORMATION)$' || true)
           fi
           echo "Changed files: $CHANGED_FILES"
           echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+
       - name: Create and populate report
         id: create-report
         run: |
@@ -53,25 +56,23 @@ jobs:
             echo "No Matillion job files changed" >> ./reports/report.md
           else
             for FILE in $CHANGED_FILES; do
-              echo "Analyzing $FILE..."
-              if [ -f "$FILE" ]; then
-                echo "### $FILE" >> ./reports/report.md
-                echo '```' >> ./reports/report.md
-                if [[ "${{ github.event_name }}" == "push" ]]; then
-                  git show HEAD^:"$FILE" > old_version.json 2>/dev/null || echo "{}" > old_version.json
-                  git show HEAD:"$FILE" > new_version.json
-                else
-                  git show origin/development:"$FILE" > old_version.json 2>/dev/null || echo "{}" > old_version.json
-                  git show HEAD:"$FILE" > new_version.json
-                fi
-                python .github/scripts/matillion_compare.py old_version.json new_version.json >> ./reports/report.md
-                echo '```' >> ./reports/report.md
-                echo "" >> ./reports/report.md
+              echo "### $FILE" >> ./reports/report.md
+              echo '```' >> ./reports/report.md
+              if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+                git show origin/development:"$FILE" > old_version.json 2>/dev/null || echo "{}" > old_version.json
+                git show HEAD:"$FILE" > new_version.json
+              else
+                git show HEAD^:"$FILE" > old_version.json 2>/dev/null || echo "{}" > old_version.json
+                git show HEAD:"$FILE" > new_version.json
               fi
+              python .github/scripts/matillion_compare.py old_version.json new_version.json >> ./reports/report.md
+              echo '```' >> ./reports/report.md
+              echo "" >> ./reports/report.md
             done
           fi
+
       - name: Create Issue for Direct Push
-        if: github.event_name == 'push' && steps.changed-files.outputs.files != ''
+        if: github.event_name == 'push' && github.event.pull_request == null && steps.changed-files.outputs.files != ''
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -85,6 +86,7 @@ jobs:
               body: report,
               labels: ['matillion-changes', 'direct-push']
             });
+
       - name: Comment PR
         if: github.event_name == 'pull_request'
         uses: peter-evans/create-or-update-comment@v3
