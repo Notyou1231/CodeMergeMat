@@ -15,7 +15,7 @@ on:
         description: 'Path to Excel migration document'
         required: true
       run_script:
-        description: 'If Executing, enter Script Number (e.g., 3) or "All" for standard migration'
+        description: 'If Executing, enter Script Number (e.g., 3) or "All"'
         required: false
         default: 'All'
 
@@ -65,23 +65,21 @@ jobs:
                       "is_backout": "rollback_scripts" in path or "BackOut" in task_val
                   })
 
+          summary_file = os.environ['GITHUB_STEP_SUMMARY']
+
           # 2. Handle "List" Mode
           if os.getenv('ACTION_TYPE') == 'List':
-              summary_file = os.environ['GITHUB_STEP_SUMMARY']
               with open(summary_file, 'a') as f:
                   f.write("## 📋 Available Migration Scripts\n")
                   f.write("| Script Number | Script Path | Dependency |\n")
                   f.write("|---------------|-------------|------------|\n")
                   for i, s in enumerate(found_scripts, 1):
                       f.write(f"| {i} | `{s['path']}` | {s['dep']} |\n")
-                  f.write(f"\n> **Note:** Role and Warehouse are managed within the SQL scripts themselves.")
               print("Table Summary generated successfully.")
 
           # 3. Handle "Execute" Mode
           else:
               run_idx = os.getenv('RUN_SCRIPT')
-              print(f"--- Starting Execution Phase (Mode: {run_idx}) ---")
-              
               ctx = snowflake.connector.connect(
                   user=os.getenv('SNOW_USER'),
                   password=os.getenv('SNOW_PASSWORD'),
@@ -89,29 +87,30 @@ jobs:
               )
               cs = ctx.cursor()
 
-              executed_count = 0
+              results = []
               for i, s in enumerate(found_scripts, 1):
                   is_targeted = (run_idx == str(i))
                   is_auto_run = (run_idx.lower() == 'all' and not s['is_backout'] and s['dep'] == "None")
                   
                   if is_targeted or is_auto_run:
                       if os.path.exists(s['path']):
-                          print(f"[EXECUTING] Script Number {i}: {s['path']}")
-                          executed_count += 1
-                          with open(s['path'], 'r') as file_content:
-                              # Split by semicolon to ensure USE ROLE/WAREHOUSE run first
-                              for stmt in file_content.read().split(';'):
-                                  if stmt.strip():
-                                      cs.execute(stmt)
+                          try:
+                              print(f"[EXECUTING] Script {i}: {s['path']}")
+                              with open(s['path'], 'r') as file_content:
+                                  for stmt in file_content.read().split(';'):
+                                      if stmt.strip(): cs.execute(stmt)
+                              results.append({"id": i, "path": s['path'], "status": "✅ Success", "msg": "Executed"})
+                          except Exception as e:
+                              results.append({"id": i, "path": s['path'], "status": "❌ Failed", "msg": str(e)[:100]})
                       else:
-                          print(f"ERROR: File {s['path']} not found!")
-                          exit(1)
-                  
-                  elif run_idx.lower() == 'all':
-                      if s['is_backout']:
-                          print(f"Note: Script {i} was skipped (Backout Script)")
-                      elif s['dep'] != "None":
-                          print(f"Note: Script {i} was skipped (Has Dependency: {s['dep']})")
+                          results.append({"id": i, "path": s['path'], "status": "⚠️ Error", "msg": "File not found"})
+              
+              # Generate Execution Summary Table
+              with open(summary_file, 'a') as f:
+                  f.write("## 🚀 Execution Report\n")
+                  f.write("| Script # | Status | Script Path | Details |\n")
+                  f.write("|----------|--------|-------------|---------|\n")
+                  for r in results:
+                      f.write(f"| {r['id']} | {r['status']} | `{r['path']}` | {r['msg']} |\n")
               
               cs.close(); ctx.close()
-              print(f"\n--- Process Finished. Successfully executed {executed_count} scripts. ---")
