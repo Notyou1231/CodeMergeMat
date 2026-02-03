@@ -8,14 +8,12 @@ on:
         required: true
         default: 'List'
         type: choice
-        options:
-          - List
-          - Execute
+        options: [List, Execute]
       file_path:
         description: 'Path to Excel migration document'
         required: true
       run_script:
-        description: 'If Executing, enter Script Number (e.g., 3) or "All"'
+        description: 'Enter Script # or "All"'
         required: false
         default: 'All'
 
@@ -30,12 +28,10 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          cache: 'pip'
+          cache: 'pip' # Requires requirements.txt in root
 
       - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Script Logic
         shell: python
@@ -49,44 +45,41 @@ jobs:
           import pandas as pd
           import re, os, snowflake.connector, sys
 
-          # 1. Extract scripts from Excel
           file_path = "${{ github.event.inputs.file_path }}"
-          if not os.path.exists(file_path):
-              print(f"Error: Excel file not found at {file_path}")
-              sys.exit(1)
-
           df = pd.read_excel(file_path)
           found_scripts = []
+          
+          # Regex matches any string ending in .sql
+          regex_pattern = r"([a-zA-Z0-9/_.\-\\]+\.sql)"
+
           for _, row in df.iterrows():
-              # Normalize slashes to forward slashes for regex matching
-              task_val = str(row.iloc[1]).replace('\\', '/')
+              task_val = str(row.iloc[1])
               dep_val = str(row.iloc[4])
               
-              # Regex updated to find paths starting with 'standard'
-              match = re.search(r"([^ ]*snowflake/[a-zA-Z0-9/_.-]+\.sql)", task_val)
-              
-              if match:
-                  # Convert path back to OS format
-                  original_path = match.group(1).replace('/', os.sep)
-                  found_scripts.append({
-                      "path": original_path,
-                      "dep": dep_val if dep_val != 'nan' else "None",
-                      "is_backout": "rollback_scripts" in original_path.lower() or "backout" in task_val.lower()
-                  })
+              matches = re.findall(regex_pattern, task_val)
+              for m in matches:
+                  # Normalize path for the runner OS
+                  clean_path = m.replace('\\', os.sep).replace('/', os.sep)
+                  
+                  # STRICT FILTER: Only add if the file actually exists in the repo
+                  if os.path.exists(clean_path):
+                      found_scripts.append({
+                          "path": clean_path,
+                          "dep": dep_val if dep_val != 'nan' else "None",
+                          "is_backout": "rollback" in clean_path.lower()
+                      })
 
           summary_file = os.environ['GITHUB_STEP_SUMMARY']
 
-          # 2. Handle "List" Mode
           if os.getenv('ACTION_TYPE') == 'List':
               with open(summary_file, 'a') as f:
-                  f.write("## 📋 Available Migration Scripts\n")
-                  f.write("| Script Number | Script Path | Dependency |\n")
-                  f.write("|---------------|-------------|------------|\n")
+                  f.write("Detected Migration Scripts\n")
+                  f.write("| # | Script Path | Dependency | Type |\n|---|-------------|------------|------|\n")
                   for i, s in enumerate(found_scripts, 1):
-                      f.write(f"| {i} | `{s['path']}` | {s['dep']} |\n")
-          
-          # 3. Handle "Execute" Mode
+                      stype = "Rollback" if s['is_backout'] else "Migration"
+                      f.write(f"| {i} | `{s['path']}` | {s['dep']} | {stype} |\n")
           else:
+              # Execution Logic
               run_idx = os.getenv('RUN_SCRIPT')
               ctx = snowflake.connector.connect(
                   user=os.getenv('SNOW_USER'),
@@ -95,30 +88,20 @@ jobs:
               )
               cs = ctx.cursor()
               results = []
-              executed_count = 0
               for i, s in enumerate(found_scripts, 1):
-                  is_targeted = (run_idx == str(i))
-                  is_auto_run = (run_idx.lower() == 'all' and not s['is_backout'] and s['dep'] == "None")
-                  
-                  if is_targeted or is_auto_run:
-                      if os.path.exists(s['path']):
-                          try:
-                              executed_count += 1
-                              with open(s['path'], 'r') as fc:
-                                  for stmt in fc.read().split(';'):
-                                      if stmt.strip(): cs.execute(stmt)
-                              results.append({"id": i, "path": s['path'], "status": "✅ Success", "msg": "Executed"})
-                          except Exception as e:
-                              results.append({"id": i, "path": s['path'], "status": "❌ Failed", "msg": str(e).replace('\n', ' ')})
-                      else:
-                          results.append({"id": i, "path": s['path'], "status": "⚠️ Error", "msg": f"File not found: {s['path']}"})
+                  if run_idx == str(i) or (run_idx.lower() == 'all' and not s['is_backout']):
+                      try:
+                          with open(s['path'], 'r') as fc:
+                              for stmt in fc.read().split(';'):
+                                  if stmt.strip(): cs.execute(stmt)
+                          results.append({"id": i, "status": "✅ Success", "path": s['path'], "msg": "OK"})
+                      except Exception as e:
+                          results.append({"id": i, "status": "❌ Failed", "path": s['path'], "msg": str(e)[:100]})
               
-              has_failures = False
               with open(summary_file, 'a') as f:
-                  f.write("Execution Report\n| Script # | Status | Path | Details |\n|---|---|---|---|\n")
+                  f.write("Execution Report\n| # | Status | Path | Details |\n|---|---|---|---|\n")
                   for r in results:
                       f.write(f"| {r['id']} | {r['status']} | `{r['path']}` | {r['msg']} |\n")
-                      if "Failed" in r['status'] or "Error" in r['status']: has_failures = True
               
               cs.close(); ctx.close()
-              if has_failures: sys.exit(1)
+              if any("Failed" in res['status'] for res in results): sys.exit(1)
