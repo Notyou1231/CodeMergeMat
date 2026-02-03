@@ -34,11 +34,10 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
-        # This will now only take 1-2 seconds if the cache is found
         run: |
           python -m pip install --upgrade pip
-          pip install pandas openpyxl snowflake-connector-python
-
+          pip install -r requirements.txt
+          
       - name: Script Logic
         shell: python
         env:
