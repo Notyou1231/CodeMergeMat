@@ -30,14 +30,13 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          # This enables caching for pip packages automatically
           cache: 'pip'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          
+
       - name: Script Logic
         shell: python
         env:
@@ -50,6 +49,7 @@ jobs:
           import pandas as pd
           import re, os, snowflake.connector, sys
 
+          # 1. Extract scripts from Excel
           file_path = "${{ github.event.inputs.file_path }}"
           if not os.path.exists(file_path):
               print(f"Error: Excel file not found at {file_path}")
@@ -58,18 +58,25 @@ jobs:
           df = pd.read_excel(file_path)
           found_scripts = []
           for _, row in df.iterrows():
-              task_val, dep_val = str(row.iloc[1]), str(row.iloc[4])
-              match = re.search(r"(snowflake/[a-zA-Z0-9/_.-]+\.sql)", task_val)
+              # Normalize slashes to forward slashes for regex matching
+              task_val = str(row.iloc[1]).replace('\\', '/')
+              dep_val = str(row.iloc[4])
+              
+              # Regex updated to find paths starting with 'standard'
+              match = re.search(r"([^ ]*snowflake/[a-zA-Z0-9/_.-]+\.sql)", task_val)
+              
               if match:
-                  path = match.group(1)
+                  # Convert path back to OS format
+                  original_path = match.group(1).replace('/', os.sep)
                   found_scripts.append({
-                      "path": path,
+                      "path": original_path,
                       "dep": dep_val if dep_val != 'nan' else "None",
-                      "is_backout": "rollback_scripts" in path or "BackOut" in task_val
+                      "is_backout": "rollback_scripts" in original_path.lower() or "backout" in task_val.lower()
                   })
 
           summary_file = os.environ['GITHUB_STEP_SUMMARY']
 
+          # 2. Handle "List" Mode
           if os.getenv('ACTION_TYPE') == 'List':
               with open(summary_file, 'a') as f:
                   f.write("## 📋 Available Migration Scripts\n")
@@ -77,6 +84,8 @@ jobs:
                   f.write("|---------------|-------------|------------|\n")
                   for i, s in enumerate(found_scripts, 1):
                       f.write(f"| {i} | `{s['path']}` | {s['dep']} |\n")
+          
+          # 3. Handle "Execute" Mode
           else:
               run_idx = os.getenv('RUN_SCRIPT')
               ctx = snowflake.connector.connect(
@@ -90,6 +99,7 @@ jobs:
               for i, s in enumerate(found_scripts, 1):
                   is_targeted = (run_idx == str(i))
                   is_auto_run = (run_idx.lower() == 'all' and not s['is_backout'] and s['dep'] == "None")
+                  
                   if is_targeted or is_auto_run:
                       if os.path.exists(s['path']):
                           try:
@@ -101,7 +111,7 @@ jobs:
                           except Exception as e:
                               results.append({"id": i, "path": s['path'], "status": "❌ Failed", "msg": str(e).replace('\n', ' ')})
                       else:
-                          results.append({"id": i, "path": s['path'], "status": "⚠️ Error", "msg": "File missing"})
+                          results.append({"id": i, "path": s['path'], "status": "⚠️ Error", "msg": f"File not found: {s['path']}"})
               
               has_failures = False
               with open(summary_file, 'a') as f:
