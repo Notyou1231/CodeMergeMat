@@ -1,7 +1,7 @@
 USE ROLE SYSADMIN;
 USE WAREHOUSE COMPUTE_WH;
-INSERT INTO SNOWFLAKE_LEARNING_DB.PUBLIC.customers (first_name, last_name, email)
-VALUES 
-    ('John', 'Doe', 'john.doe@email.com'),
-    ('Jane', 'Smith', 'jane.smith@email.com'),
-    ('Bob', 'Johnson', 'bob.johnson@email.com');
+CREATE TABLE SNOWFLAKE_LEARNING_DB.PUBLIC.customers (
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE
+);
