@@ -14,7 +14,6 @@ on:
       file_path:
         description: 'Path to Excel migration document'
         required: true
-        default: 'Migration_Documents/S-527323_S-539527_Migration.xlsx'
       run_script:
         description: 'If Executing, enter Script Number (e.g., 3) or "All" for standard migration'
         required: false
