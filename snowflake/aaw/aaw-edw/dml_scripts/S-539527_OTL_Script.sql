@@ -1,1 +1,6 @@
+USE ROLE SYSADMIN;
+
+----------------
+
+USE WAREHOUSE COMPUTE_WH;
 select current_date
