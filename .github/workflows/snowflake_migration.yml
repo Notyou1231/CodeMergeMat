@@ -12,6 +12,7 @@ on:
       file_path:
         description: 'Path to Excel migration document'
         required: true
+        default: 'Migration_Documents/S-527323_S-539527_Migration.xlsx'
       run_script:
         description: 'Enter Script # or "All"'
         required: false
@@ -28,10 +29,12 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          cache: 'pip' # Requires requirements.txt in root
+          cache: 'pip' # Automatically looks for requirements.txt
 
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas openpyxl snowflake-connector-python
 
       - name: Script Logic
         shell: python
@@ -46,40 +49,51 @@ jobs:
           import re, os, snowflake.connector, sys
 
           file_path = "${{ github.event.inputs.file_path }}"
+          if not os.path.exists(file_path):
+              print(f"Error: Excel file not found at {file_path}")
+              sys.exit(1)
+
           df = pd.read_excel(file_path)
           found_scripts = []
           
-          # Regex matches any string ending in .sql
+          # Regex to find any string ending in .sql
           regex_pattern = r"([a-zA-Z0-9/_.\-\\]+\.sql)"
 
+          print("--- Starting File Detection ---")
           for _, row in df.iterrows():
               task_val = str(row.iloc[1])
               dep_val = str(row.iloc[4])
               
               matches = re.findall(regex_pattern, task_val)
               for m in matches:
-                  # Normalize path for the runner OS
-                  clean_path = m.replace('\\', os.sep).replace('/', os.sep)
+                  # Fix: Convert Windows backslashes to Linux forward slashes
+                  clean_path = m.replace('\\', '/')
                   
-                  # STRICT FILTER: Only add if the file actually exists in the repo
+                  # Validation: Only add if the file actually exists in the repo
                   if os.path.exists(clean_path):
+                      print(f"Found valid script: {clean_path}")
                       found_scripts.append({
                           "path": clean_path,
                           "dep": dep_val if dep_val != 'nan' else "None",
                           "is_backout": "rollback" in clean_path.lower()
                       })
-
+          
           summary_file = os.environ['GITHUB_STEP_SUMMARY']
 
+          # Handle "List" Mode
           if os.getenv('ACTION_TYPE') == 'List':
               with open(summary_file, 'a') as f:
-                  f.write("Detected Migration Scripts\n")
-                  f.write("| # | Script Path | Dependency | Type |\n|---|-------------|------------|------|\n")
-                  for i, s in enumerate(found_scripts, 1):
-                      stype = "Rollback" if s['is_backout'] else "Migration"
-                      f.write(f"| {i} | `{s['path']}` | {s['dep']} | {stype} |\n")
+                  f.write("## 📋 Detected Migration Scripts\n")
+                  if not found_scripts:
+                      f.write("⚠️ No valid .sql files found in the repository. Check folder paths/case-sensitivity.")
+                  else:
+                      f.write("| # | Script Path | Dependency | Type |\n|---|-------------|------------|------|\n")
+                      for i, s in enumerate(found_scripts, 1):
+                          stype = "🔄 Rollback" if s['is_backout'] else "🚀 Migration"
+                          f.write(f"| {i} | `{s['path']}` | {s['dep']} | {stype} |\n")
+          
+          # Handle "Execute" Mode
           else:
-              # Execution Logic
               run_idx = os.getenv('RUN_SCRIPT')
               ctx = snowflake.connector.connect(
                   user=os.getenv('SNOW_USER'),
@@ -88,20 +102,26 @@ jobs:
               )
               cs = ctx.cursor()
               results = []
+              
               for i, s in enumerate(found_scripts, 1):
+                  # Run if specific number is chosen OR "All" (excluding rollbacks)
                   if run_idx == str(i) or (run_idx.lower() == 'all' and not s['is_backout']):
                       try:
+                          print(f"Executing: {s['path']}")
                           with open(s['path'], 'r') as fc:
+                              # Split by semicolon to run multiple statements in one file
                               for stmt in fc.read().split(';'):
                                   if stmt.strip(): cs.execute(stmt)
-                          results.append({"id": i, "status": "✅ Success", "path": s['path'], "msg": "OK"})
+                          results.append({"id": i, "status": "✅ Success", "path": s['path'], "msg": "Executed"})
                       except Exception as e:
-                          results.append({"id": i, "status": "❌ Failed", "path": s['path'], "msg": str(e)[:100]})
+                          results.append({"id": i, "status": "❌ Failed", "path": s['path'], "msg": str(e)[:150]})
               
               with open(summary_file, 'a') as f:
-                  f.write("Execution Report\n| # | Status | Path | Details |\n|---|---|---|---|\n")
+                  f.write("## 🚀 Execution Report\n| # | Status | Path | Details |\n|---|---|---|---|\n")
                   for r in results:
                       f.write(f"| {r['id']} | {r['status']} | `{r['path']}` | {r['msg']} |\n")
               
               cs.close(); ctx.close()
-              if any("Failed" in res['status'] for res in results): sys.exit(1)
+              if any("Failed" in res['status'] for res in results):
+                  print("Migration finished with errors.")
+                  sys.exit(1)
