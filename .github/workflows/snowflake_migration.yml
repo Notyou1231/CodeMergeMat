@@ -51,9 +51,9 @@ jobs:
               sys.exit(1)
 
           df = pd.read_excel(file_path)
-          found_scripts = []
+          all_extracted_scripts = []
           
-          # This regex picks up strings that look like paths ending in .sql
+          # Regex to find .sql paths
           regex_pattern = r"([a-zA-Z0-9/_.\-\\]+\.sql)"
 
           for _, row in df.iterrows():
@@ -62,47 +62,54 @@ jobs:
               
               matches = re.findall(regex_pattern, task_val)
               for m in matches:
-                  # Normalize: Convert \ to / for Linux
-                  # Also strip any leading slashes that might break os.path.join
                   clean_path = m.replace('\\', '/').lstrip('/')
+                  # We check existence but keep the script in the list either way
+                  exists = os.path.exists(clean_path)
                   
-                  # Check if the file exists at the path provided by Excel
-                  if os.path.exists(clean_path):
-                      found_scripts.append({
-                          "path": clean_path,
-                          "dep": dep_val if dep_val != 'nan' else "None",
-                          # Check for rollback in path or the Task description
-                          "is_backout": "rollback" in clean_path.lower() or "backout" in task_val.lower()
-                      })
-                  else:
-                      # Logging to help you debug why it isn't found
-                      print(f"DEBUG: File not found on disk at: {clean_path}")
+                  all_extracted_scripts.append({
+                      "path": clean_path,
+                      "dep": dep_val if dep_val != 'nan' else "None",
+                      "is_backout": "rollback" in clean_path.lower() or "backout" in task_val.lower(),
+                      "exists": exists
+                  })
 
           summary_file = os.environ['GITHUB_STEP_SUMMARY']
 
+          # --- LIST MODE ---
           if os.getenv('ACTION_TYPE') == 'List':
               with open(summary_file, 'a') as f:
-                  f.write("## 📋 Detected Migration Scripts\n")
-                  if not found_scripts:
-                      f.write("⚠️ No .sql files matched. Ensure your Excel paths match your Repo folders exactly.")
-                  else:
-                      f.write("| # | Script Path | Dependency | Type |\n|---|-------------|------------|------|\n")
-                      for i, s in enumerate(found_scripts, 1):
-                          stype = "🔄 Rollback" if s['is_backout'] else "🚀 Migration"
-                          f.write(f"| {i} | `{s['path']}` | {s['dep']} | {stype} |\n")
+                  f.write("## 📋 Script Detection Results\n")
+                  f.write("| # | Status | Script Path | Dependency | Type |\n")
+                  f.write("|---|---|---|---|---|\n")
+                  for i, s in enumerate(all_extracted_scripts, 1):
+                      status_icon = "✅ Found" if s['exists'] else "❌ Missing in Repo"
+                      stype = "🔄 Rollback" if s['is_backout'] else "🚀 Migration"
+                      f.write(f"| {i} | {status_icon} | `{s['path']}` | {s['dep']} | {stype} |\n")
+                  
+                  if not any(s['exists'] for s in all_extracted_scripts):
+                      f.write("\n⚠️ **Warning:** No files were found on disk. Check your folder structure vs Excel paths.")
+
+          # --- EXECUTE MODE ---
           else:
-              # Execution Logic
               run_idx = os.getenv('RUN_SCRIPT')
               ctx = snowflake.connector.connect(
                   user=os.getenv('SNOW_USER'), password=os.getenv('SNOW_PASSWORD'), account=os.getenv('SNOW_ACCOUNT')
               )
               cs = ctx.cursor()
               results = []
-              for i, s in enumerate(found_scripts, 1):
-                  if run_idx == str(i) or (run_idx.lower() == 'all' and not s['is_backout']):
+              
+              # Only iterate through scripts that actually exist for execution
+              for i, s in enumerate(all_extracted_scripts, 1):
+                  is_targeted = (run_idx == str(i))
+                  is_auto_run = (run_idx.lower() == 'all' and not s['is_backout'])
+                  
+                  if is_targeted or is_auto_run:
+                      if not s['exists']:
+                          results.append({"id": i, "status": "⚠️ Skipped", "path": s['path'], "msg": "File not found in repository"})
+                          continue
+                          
                       try:
                           with open(s['path'], 'r') as fc:
-                              # Split by semicolon for multi-statement files
                               for stmt in fc.read().split(';'):
                                   if stmt.strip(): cs.execute(stmt)
                           results.append({"id": i, "status": "✅ Success", "path": s['path'], "msg": "OK"})
@@ -110,8 +117,10 @@ jobs:
                           results.append({"id": i, "status": "❌ Failed", "path": s['path'], "msg": str(e)[:150]})
               
               with open(summary_file, 'a') as f:
-                  f.write("## 🚀 Execution Report\n| # | Status | Path | Details |\n|---|---|---|---|\n")
+                  f.write("## 🚀 Execution Report\n")
+                  f.write("| # | Status | Path | Details |\n|---|---|---|---|\n")
                   for r in results:
                       f.write(f"| {r['id']} | {r['status']} | `{r['path']}` | {r['msg']} |\n")
+              
               cs.close(); ctx.close()
               if any("Failed" in res['status'] for res in results): sys.exit(1)
