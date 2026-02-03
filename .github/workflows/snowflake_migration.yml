@@ -15,7 +15,7 @@ on:
         description: 'Path to Excel migration document'
         required: true
       run_script:
-        description: 'If Executing, enter Script Number (e.g., 3) or "All"'
+        description: 'If Executing, enter Script Number (e.g., 3) or "All" for standard migration'
         required: false
         default: 'All'
 
@@ -44,13 +44,13 @@ jobs:
           RUN_SCRIPT: ${{ github.event.inputs.run_script }}
         run: |
           import pandas as pd
-          import re, os, snowflake.connector
+          import re, os, snowflake.connector, sys
 
           # 1. Extract scripts from Excel
-          file_path = "${{ github.event.inputs.file_path }}"
+          file_path = os.getenv('file_path', "${{ github.event.inputs.file_path }}")
           if not os.path.exists(file_path):
               print(f"Error: Excel file not found at {file_path}")
-              exit(1)
+              sys.exit(1)
 
           df = pd.read_excel(file_path)
           found_scripts = []
@@ -67,7 +67,7 @@ jobs:
 
           summary_file = os.environ['GITHUB_STEP_SUMMARY']
 
-          # 2. Handle "List" Mode
+          # 2. Handle "List" Mode - Generates Table Summary
           if os.getenv('ACTION_TYPE') == 'List':
               with open(summary_file, 'a') as f:
                   f.write("## 📋 Available Migration Scripts\n")
@@ -75,11 +75,14 @@ jobs:
                   f.write("|---------------|-------------|------------|\n")
                   for i, s in enumerate(found_scripts, 1):
                       f.write(f"| {i} | `{s['path']}` | {s['dep']} |\n")
+                  f.write(f"\n> **Note:** Role and Warehouse are managed within the SQL scripts.")
               print("Table Summary generated successfully.")
 
           # 3. Handle "Execute" Mode
           else:
               run_idx = os.getenv('RUN_SCRIPT')
+              print(f"--- Starting Execution Phase (Mode: {run_idx}) ---")
+              
               ctx = snowflake.connector.connect(
                   user=os.getenv('SNOW_USER'),
                   password=os.getenv('SNOW_PASSWORD'),
@@ -88,6 +91,7 @@ jobs:
               cs = ctx.cursor()
 
               results = []
+              executed_count = 0
               for i, s in enumerate(found_scripts, 1):
                   is_targeted = (run_idx == str(i))
                   is_auto_run = (run_idx.lower() == 'all' and not s['is_backout'] and s['dep'] == "None")
@@ -96,21 +100,36 @@ jobs:
                       if os.path.exists(s['path']):
                           try:
                               print(f"[EXECUTING] Script {i}: {s['path']}")
+                              executed_count += 1
                               with open(s['path'], 'r') as file_content:
                                   for stmt in file_content.read().split(';'):
                                       if stmt.strip(): cs.execute(stmt)
-                              results.append({"id": i, "path": s['path'], "status": "✅ Success", "msg": "Executed"})
+                              results.append({"id": i, "path": s['path'], "status": "✅ Success", "msg": "Executed successfully"})
                           except Exception as e:
-                              results.append({"id": i, "path": s['path'], "status": "❌ Failed", "msg": str(e)[:100]})
+                              results.append({"id": i, "path": s['path'], "status": "❌ Failed", "msg": str(e).replace('\n', ' ')})
                       else:
-                          results.append({"id": i, "path": s['path'], "status": "⚠️ Error", "msg": "File not found"})
-              
+                          results.append({"id": i, "path": s['path'], "status": "⚠️ Error", "msg": "File not found in repository"})
+                  
+                  elif run_idx.lower() == 'all':
+                      status_msg = "Backout Script" if s['is_backout'] else f"Dependency: {s['dep']}"
+                      print(f"Note: Script {i} skipped ({status_msg})")
+
               # Generate Execution Summary Table
+              has_failures = False
               with open(summary_file, 'a') as f:
                   f.write("## 🚀 Execution Report\n")
                   f.write("| Script # | Status | Script Path | Details |\n")
                   f.write("|----------|--------|-------------|---------|\n")
                   for r in results:
                       f.write(f"| {r['id']} | {r['status']} | `{r['path']}` | {r['msg']} |\n")
+                      if "Failed" in r['status'] or "Error" in r['status']:
+                          has_failures = True
               
               cs.close(); ctx.close()
+
+              # Fail the GitHub Action if any script failed
+              if has_failures:
+                  print("\n❌ Migration failed. Check the Summary Report for details.")
+                  sys.exit(1)
+              else:
+                  print(f"\n✅ Successfully executed {executed_count} scripts.")
