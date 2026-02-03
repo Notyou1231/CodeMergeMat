@@ -117,7 +117,7 @@ jobs:
               # Generate Execution Summary Table
               has_failures = False
               with open(summary_file, 'a') as f:
-                  f.write("## 🚀 Execution Report\n")
+                  f.write("Execution Report\n")
                   f.write("| Script # | Status | Script Path | Details |\n")
                   f.write("|----------|--------|-------------|---------|\n")
                   for r in results:
