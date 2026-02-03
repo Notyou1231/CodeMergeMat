@@ -4,16 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       action_type:
-        description: 'Choose "List" to see script numbers or "Execute" to run them'
+        description: 'Choose "List" or "Execute"'
         required: true
         default: 'List'
         type: choice
         options: [List, Execute]
       file_path:
-        description: 'Path to Excel migration document'
+        description: 'Path to Excel'
         required: true
+        default: 'Migration_Documents/S-527323_S-539527_Migration.xlsx'
       run_script:
-        description: 'If Executing, enter Script Number (e.g., 3) or "All"'
+        description: 'Script # or "All"'
         required: false
         default: 'All'
 
@@ -28,12 +29,9 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          cache: 'pip' # Automatically looks for requirements.txt
 
       - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas openpyxl snowflake-connector-python
+        run: pip install pandas openpyxl snowflake-connector-python
 
       - name: Script Logic
         shell: python
@@ -52,17 +50,10 @@ jobs:
               print(f"Error: Excel file not found at {file_path}")
               sys.exit(1)
 
-          # 1. Map actual files in repo to handle case-sensitivity and slashes
-          repo_files = {}
-          for root, dirs, files in os.walk("."):
-              for name in files:
-                  full_path = os.path.join(root, name).replace("./", "").replace("\\", "/")
-                  repo_files[full_path.lower()] = full_path
-
           df = pd.read_excel(file_path)
           found_scripts = []
           
-          # Regex to find any string ending in .sql
+          # This regex picks up strings that look like paths ending in .sql
           regex_pattern = r"([a-zA-Z0-9/_.\-\\]+\.sql)"
 
           for _, row in df.iterrows():
@@ -71,52 +62,50 @@ jobs:
               
               matches = re.findall(regex_pattern, task_val)
               for m in matches:
-                  # Normalize Excel path for comparison
-                  excel_path_lower = m.replace('\\', '/').lower()
+                  # Normalize: Convert \ to / for Linux
+                  # Also strip any leading slashes that might break os.path.join
+                  clean_path = m.replace('\\', '/').lstrip('/')
                   
-                  # Verify if the file actually exists in the repository
-                  if excel_path_lower in repo_files:
-                      actual_path = repo_files[excel_path_lower]
+                  # Check if the file exists at the path provided by Excel
+                  if os.path.exists(clean_path):
                       found_scripts.append({
-                          "path": actual_path,
+                          "path": clean_path,
                           "dep": dep_val if dep_val != 'nan' else "None",
-                          "is_backout": "rollback" in actual_path.lower() or "backout" in task_val.lower()
+                          # Check for rollback in path or the Task description
+                          "is_backout": "rollback" in clean_path.lower() or "backout" in task_val.lower()
                       })
+                  else:
+                      # Logging to help you debug why it isn't found
+                      print(f"DEBUG: File not found on disk at: {clean_path}")
 
           summary_file = os.environ['GITHUB_STEP_SUMMARY']
 
-          # 2. Handle "List" Mode
           if os.getenv('ACTION_TYPE') == 'List':
               with open(summary_file, 'a') as f:
                   f.write("## 📋 Detected Migration Scripts\n")
                   if not found_scripts:
-                      f.write("⚠️ No valid .sql files found. Please check folder paths and case-sensitivity.")
+                      f.write("⚠️ No .sql files matched. Ensure your Excel paths match your Repo folders exactly.")
                   else:
                       f.write("| # | Script Path | Dependency | Type |\n|---|-------------|------------|------|\n")
                       for i, s in enumerate(found_scripts, 1):
                           stype = "🔄 Rollback" if s['is_backout'] else "🚀 Migration"
                           f.write(f"| {i} | `{s['path']}` | {s['dep']} | {stype} |\n")
-          
-          # 3. Handle "Execute" Mode
           else:
+              # Execution Logic
               run_idx = os.getenv('RUN_SCRIPT')
               ctx = snowflake.connector.connect(
-                  user=os.getenv('SNOW_USER'),
-                  password=os.getenv('SNOW_PASSWORD'),
-                  account=os.getenv('SNOW_ACCOUNT')
+                  user=os.getenv('SNOW_USER'), password=os.getenv('SNOW_PASSWORD'), account=os.getenv('SNOW_ACCOUNT')
               )
               cs = ctx.cursor()
               results = []
-              
               for i, s in enumerate(found_scripts, 1):
-                  # Execute if specific ID is chosen or "All" (ignoring rollbacks)
                   if run_idx == str(i) or (run_idx.lower() == 'all' and not s['is_backout']):
                       try:
                           with open(s['path'], 'r') as fc:
-                              # Split and execute multiple statements
+                              # Split by semicolon for multi-statement files
                               for stmt in fc.read().split(';'):
                                   if stmt.strip(): cs.execute(stmt)
-                          results.append({"id": i, "status": "✅ Success", "path": s['path'], "msg": "Executed"})
+                          results.append({"id": i, "status": "✅ Success", "path": s['path'], "msg": "OK"})
                       except Exception as e:
                           results.append({"id": i, "status": "❌ Failed", "path": s['path'], "msg": str(e)[:150]})
               
@@ -124,6 +113,5 @@ jobs:
                   f.write("## 🚀 Execution Report\n| # | Status | Path | Details |\n|---|---|---|---|\n")
                   for r in results:
                       f.write(f"| {r['id']} | {r['status']} | `{r['path']}` | {r['msg']} |\n")
-              
               cs.close(); ctx.close()
               if any("Failed" in res['status'] for res in results): sys.exit(1)
